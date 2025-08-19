@@ -1,0 +1,7 @@
+{"Add type hints & documentation":
+  "Modify the following Python code by adding appropriate type hints and comprehensive docstrings. Make sure the docstrings follow Google style guidelines with Args, Returns, and Raises sections where applicable. Return the full code with updates applied. Do NOT wrap the code in a markdown block (such as ```python, etc) - only write pure Python code.",
+  "Create unit tests for this function": "Generate comprehensive unit tests for the following Python code using pytest. Include tests for normal cases, edge cases, and error conditions where appropriate.",
+  "Refactor for readability & speed": "Refactor the following Python code to improve both readability and performance. Focus on simplifying logic, using more efficient data structures where possible, and making the code more maintainable.",
+  "Identify possible bugs": "Analyze the following Python code and identify any potential bugs, edge cases, or areas for improvement. Provide specific suggestions for fixes or enhancements."
+}
+

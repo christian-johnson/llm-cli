@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import json
 import re
 import subprocess
 import tempfile
@@ -12,49 +13,57 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.clipboard.pyperclip import PyperclipClipboard
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout.containers import (
-    FloatContainer,
-    HSplit,
-    Window,
-)
+from prompt_toolkit.layout.containers import Float, FloatContainer, HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.lexers import PygmentsLexer
-from prompt_toolkit.styles.pygments import style_from_pygments_cls
+from prompt_toolkit.widgets import Button, Dialog, RadioList
 from pygments.lexers.python import PythonLexer
-from pygments.styles import get_style_by_name
+
+from tokyonight_pygments import tokyonight_style
 
 # -----------------------------
 # Constants
 # -----------------------------
-PROMPTS = {
-    "Add type hints & documentation": """Modify the following Python code by adding appropriate type hints and comprehensive docstrings. Make sure the docstrings follow Google style guidelines with Args, Returns, and Raises sections where applicable. Return the full code with updates applied. Do NOT wrap the code in a markdown block (such as ```python, etc) - only write pure Python code.""",
-    "Create unit tests for this function": """Generate comprehensive unit tests for the following Python code using pytest. Include tests for normal cases, edge cases, and error conditions where appropriate.""",
-    "Refactor for readability & speed": """Refactor the following Python code to improve both readability and performance. Focus on simplifying logic, using more efficient data structures where possible, and making the code more maintainable.""",
-    "Identify possible bugs": """Analyze the following Python code and identify any potential bugs, edge cases, or areas for improvement. Provide specific suggestions for fixes or enhancements.""",
-}
-
+with open("prompts.json", "r") as f:
+    PROMPTS = json.load(f)
 ALL_INSTRUCTIONS = (
     "Your response should be a string of Python code (without markdown formatting or any explanation) "
     "that replaces the original code as appropriate.\n\nCODE:\n\n"
 )
 
-style = style_from_pygments_cls(get_style_by_name("monokai"))
 
 # -----------------------------
 # Model Setup
 # -----------------------------
-try:
-    with lms.Client() as init_client:
-        downloaded = [llm.identifier for llm in init_client.llm.list_loaded()]
-    client = lms.get_default_client()
-    models_available = downloaded
-except Exception as e:
-    models_available = []
-    print(
-        f"Could not connect to LM Studio server. Please make sure it's running. Error: {e}"
-    )
+def setup_model_client() -> list[str]:
+    """
+    Sets up the model client for LLM operations.
+
+    This function attempts to connect to the LM Studio server and retrieve
+    a list of loaded models. If connection fails, it returns an empty list
+    and prints an error message.
+
+    Returns:
+        list[str]: A list of loaded model identifiers. Returns empty list if connection fails.
+    """
+    models_available: list[str] = []
+
+    try:
+        with lms.Client() as init_client:
+            downloaded = [llm.identifier for llm in init_client.llm.list_loaded()]
+        client = lms.get_default_client()
+        models_available = downloaded
+    except Exception as e:
+        print(
+            f"Could not connect to LM Studio server. Please make sure it's running. Error: {e}"
+        )
+
+    return models_available
+
+
+models_available = setup_model_client()
 
 
 # -----------------------------
@@ -170,14 +179,94 @@ def status_text():
     model = current_model[0] or "None"
     prompt_name = current_prompt[0]
     flash = " (YANKED!)" if flash_active[0] else ""
-    spin = f" [Running {spinner_text[0]}]" if spinner_running[0] else ""
+    spin = f" [{spinner_text[0]}]" if spinner_running[0] else ""
     return f" Model: {model} | Prompt: {prompt_name}{flash}{spin} "
+
+
+active_selector = [None]  # will hold the RadioList widget when open
+active_accept = [None]  # will hold a callable to commit selection
+
+
+def close_popups(app, restore_focus: bool = True):
+    active_selector[0] = None
+    active_accept[0] = None
+    root_container.floats[:] = []
+    if restore_focus:
+        app.layout.focus(code_control)
+    app.invalidate()
+
+
+def _make_selector_dialog(title: str, items, initial_value, on_accept):
+    selector = RadioList([(x, x) for x in items])
+    if initial_value in items:
+        selector.current_value = initial_value
+
+    def ok_handler():
+        if selector.current_value is not None:
+            on_accept(selector.current_value)
+        close_popups(app)  # always closes and restores focus
+
+    def cancel_handler():
+        close_popups(app)
+
+    dialog = Dialog(
+        title=title,
+        body=selector,
+        buttons=[
+            Button(text="OK", handler=ok_handler),
+            Button(text="Cancel", handler=cancel_handler),
+        ],
+        width=None,
+        modal=True,
+    )
+    return selector, dialog
+
+
+def show_model_popup(app):
+    if not models_available:
+        output_buffer.set_document(
+            Document("No models loaded. Start LM Studio and load a model."),
+            bypass_readonly=True,
+        )
+        return
+    close_popups(app)
+    selector, dialog = _make_selector_dialog(
+        "Select Model",
+        models_available,
+        current_model[0],
+        on_accept=lambda val: current_model.__setitem__(0, val),
+    )
+    active_selector[0] = selector
+    active_accept[0] = lambda: (
+        current_model.__setitem__(0, selector.current_value),
+        None,
+    )
+    root_container.floats.append(Float(content=dialog))
+    app.layout.focus(selector)
+
+
+def show_prompt_popup(app):
+    close_popups(app)
+    prompt_names = list(PROMPTS.keys())
+    selector, dialog = _make_selector_dialog(
+        "Select Prompt",
+        prompt_names,
+        current_prompt[0],
+        on_accept=lambda val: current_prompt.__setitem__(0, val),
+    )
+    active_selector[0] = selector
+    active_accept[0] = lambda: (
+        current_prompt.__setitem__(0, selector.current_value),
+        None,
+    )
+    root_container.floats.append(Float(content=dialog))
+    app.layout.focus(selector)
 
 
 status_bar = Window(
     height=1,
     content=FormattedTextControl(lambda: status_text()),
-    style="reverse",
+    style="bg:#c099ff fg:#222436",
 )
 
 # -----------------------------
@@ -185,7 +274,11 @@ status_bar = Window(
 # -----------------------------
 input_pane = HSplit(
     [
-        Window(height=1, content=FormattedTextControl("Input:"), style="reverse"),
+        Window(
+            height=1,
+            content=FormattedTextControl("Input:"),
+            style="bg:#82aaff fg:#222436",
+        ),
         Window(code_control, wrap_lines=True, always_hide_cursor=False),
     ],
     height=D(weight=1),
@@ -193,7 +286,11 @@ input_pane = HSplit(
 
 output_pane = HSplit(
     [
-        Window(height=1, content=FormattedTextControl("Output:"), style="reverse"),
+        Window(
+            height=1,
+            content=FormattedTextControl("Output:"),
+            style="bg:#82aaff fg:#222436",
+        ),
         Window(output_control, wrap_lines=True, always_hide_cursor=False),
     ],
     height=D(weight=1),
@@ -220,7 +317,19 @@ def _(event):
     event.app.layout.focus_previous()
 
 
-@kb.add("c-n")
+@kb.add("L")
+def _(event):
+    # Open model popup; if one is already open, close and replace.
+    show_model_popup(event.app)
+
+
+@kb.add("P")
+def _(event):
+    # Open prompt popup; if one is already open, close and replace.
+    show_prompt_popup(event.app)
+
+
+@kb.add("N")
 def _(event):
     # Reset state
     code_buffer.text = ""
@@ -320,7 +429,7 @@ app = Application(
     layout=layout,
     full_screen=True,
     key_bindings=kb,
-    style=style,
+    style=tokyonight_style,
 )
 
 if __name__ == "__main__":
